@@ -1,13 +1,9 @@
 /*
  *  io_basic_win32.c
  *
- *  Windows-native file path normalization and I/O patches
- *  for Ciao Prolog engine (io_basic.c).
- *
- *  This file provides Win32 API replacements for POSIX I/O
- *  operations that are not available in native Windows builds.
- *
- *  Applied as a supplementary compilation unit linked with the engine.
+ *  Path normalization and console I/O for the Windows native build.
+ *  Provides POSIX/Windows path conversion, non-blocking stdin check,
+ *  and UTF-8 console initialization for the interactive REPL.
  */
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -21,15 +17,17 @@
 #include <errno.h>
 
 /* ------------------------------------------------------------------ */
-/* Path normalization: convert POSIX paths to Windows paths           */
+/* Path normalization                                                 */
 /* ------------------------------------------------------------------ */
 
 /*
- * Normalize a file path for Windows:
- *  - Replace '/' with '\\'
- *  - Handle drive letters (C:/ -> C:\)
- *  - Collapse consecutive separators
- *  - Remove trailing separator (unless root)
+ * Convert a POSIX-style path to Windows native format:
+ *   - Replace '/' with '\\'
+ *   - Handle MSYS2 drive letters (/c/ -> C:\)
+ *   - Collapse consecutive separators
+ *   - Strip trailing separator (unless root like C:\)
+ *
+ * Returns 0 on success, -1 on error.
  */
 int win32_normalize_path(const char *posix_path, char *win_path, size_t bufsize) {
     const char *src = posix_path;
@@ -65,7 +63,7 @@ int win32_normalize_path(const char *posix_path, char *win_path, size_t bufsize)
         }
     }
 
-    /* Remove trailing separator unless it's root like C:\ */
+    /* Remove trailing separator unless it's a drive root like C:\ */
     if (dst > win_path + 1 && *(dst - 1) == '\\') {
         if (!(dst == win_path + 3 && win_path[1] == ':')) {
             dst--;
@@ -77,8 +75,9 @@ int win32_normalize_path(const char *posix_path, char *win_path, size_t bufsize)
 }
 
 /*
- * Convert a Windows path back to POSIX-style (for internal use):
- *  - Replace '\\' with '/'
+ * Convert a Windows path to POSIX-style (replaces '\\' with '/').
+ * Used when the engine receives paths from Win32 APIs and needs to
+ * store them in the internal format.
  */
 int win32_to_posix_path(const char *win_path, char *posix_path, size_t bufsize) {
     const char *src = win_path;
@@ -98,12 +97,16 @@ int win32_to_posix_path(const char *win_path, char *posix_path, size_t bufsize) 
 }
 
 /* ------------------------------------------------------------------ */
-/* select() replacement for stdin readiness check                     */
+/* Non-blocking stdin check (replaces select(2) on stdin)             */
 /* ------------------------------------------------------------------ */
 
 /*
- * Check if stdin has data available (non-blocking).
- * Used by the engine REPL to check for input readiness.
+ * Check if stdin has data available without blocking.
+ * Returns 1 if ready, 0 otherwise.
+ *
+ * For console input, we peek the input queue and skip non-key events
+ * (mouse, resize, focus). For pipes, we use PeekNamedPipe.
+ * For regular files, always ready.
  */
 int win32_stdin_ready(void) {
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
@@ -112,7 +115,7 @@ int win32_stdin_ready(void) {
     if (hStdin == INVALID_HANDLE_VALUE) return 0;
 
     if (GetConsoleMode(hStdin, &mode)) {
-        /* Console input */
+        /* Console: scan for actual key-down events with characters */
         DWORD numEvents = 0;
         if (!GetNumberOfConsoleInputEvents(hStdin, &numEvents)) return 0;
         
@@ -134,24 +137,28 @@ int win32_stdin_ready(void) {
         }
         return 0;
     } else {
-        /* Pipe/file input - use PeekNamedPipe */
+        /* Pipe: check with PeekNamedPipe; file: always ready */
         DWORD bytesAvail = 0;
         if (PeekNamedPipe(hStdin, NULL, 0, NULL, &bytesAvail, NULL)) {
             return (bytesAvail > 0) ? 1 : 0;
         }
-        /* For regular files, always ready */
         return 1;
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Console I/O for REPL                                               */
+/* Console initialization                                             */
 /* ------------------------------------------------------------------ */
 
 static HANDLE hConsoleIn = INVALID_HANDLE_VALUE;
 static HANDLE hConsoleOut = INVALID_HANDLE_VALUE;
 static DWORD  origConsoleMode = 0;
 
+/*
+ * Configure the console for the Ciao REPL:
+ *   - Enable ANSI escape codes (ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+ *   - Set codepage to UTF-8 (65001)
+ */
 int win32_console_init(void) {
     hConsoleIn = GetStdHandle(STD_INPUT_HANDLE);
     hConsoleOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -160,30 +167,29 @@ int win32_console_init(void) {
         return -1;
     }
     
-    /* Save original console mode */
     GetConsoleMode(hConsoleIn, &origConsoleMode);
     
-    /* Enable virtual terminal processing for ANSI escape codes */
+    /* ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) - Win10 1511+ */
     DWORD outMode = 0;
     if (GetConsoleMode(hConsoleOut, &outMode)) {
-        outMode |= 0x0004; /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */
+        outMode |= 0x0004;
         SetConsoleMode(hConsoleOut, outMode);
     }
     
-    /* Set console to UTF-8 */
     SetConsoleCP(65001);
     SetConsoleOutputCP(65001);
     
     return 0;
 }
 
+/* Restore original console mode on exit. */
 void win32_console_cleanup(void) {
     if (hConsoleIn != INVALID_HANDLE_VALUE) {
         SetConsoleMode(hConsoleIn, origConsoleMode);
     }
 }
 
-/* Write a Unicode string to the console */
+/* Write a UTF-16 string to the console. Returns chars written or -1. */
 int win32_console_write(const wchar_t *str, int len) {
     DWORD written;
     if (hConsoleOut == INVALID_HANDLE_VALUE) return -1;
@@ -191,7 +197,7 @@ int win32_console_write(const wchar_t *str, int len) {
     return (int)written;
 }
 
-/* Read a Unicode character from the console */
+/* Read a single character from the console (blocks until key-down). */
 int win32_console_read(wchar_t *ch) {
     DWORD read;
     if (hConsoleIn == INVALID_HANDLE_VALUE) return -1;

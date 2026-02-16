@@ -28,11 +28,11 @@ New-Item $stagingDir -ItemType Directory | Out-Null
 # Copy bin/
 Copy-Item "$distDir\bin" "$stagingDir\bin" -Recurse
 
-# Reorganize lib/ → Ciao-expected layout
-#   dist/lib/core/      → core/lib/       (core library modules)
-#   dist/lib/library/   → core/library/   (user library)
-#   dist/lib/engine/    → core/engine/    (engine support files)
-#   dist/lib/builder/   → builder/        (builder, already has src/ inside)
+# Reorganize from build layout to engine-expected layout:
+#   dist/lib/core/      -> core/lib/       (core library modules)
+#   dist/lib/library/   -> core/library/   (standard library)
+#   dist/lib/engine/    -> core/engine/    (engine support files)
+#   dist/lib/builder/   -> builder/        (build system)
 New-Item "$stagingDir\core\lib" -ItemType Directory -Force | Out-Null
 New-Item "$stagingDir\core\library" -ItemType Directory -Force | Out-Null
 New-Item "$stagingDir\core\engine" -ItemType Directory -Force | Out-Null
@@ -68,7 +68,7 @@ if (Test-Path $lpdocDir) {
     Write-Host "  Included lpdoc sources" -ForegroundColor Green
 }
 
-# Copy Manifest directories (needed for bundle registry generation during install)
+# Copy Manifest files (needed by ciao_builder rescan-bundles during install)
 # Core
 if (Test-Path "$repoRoot\core\Manifest\Manifest.pl") {
     New-Item "$stagingDir\core\Manifest" -ItemType Directory -Force | Out-Null

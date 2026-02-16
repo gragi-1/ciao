@@ -28,7 +28,7 @@ popd
 
 echo Project root: %PROJECT_ROOT%
 
-REM --- Ensure MinGW bin is in PATH (needed for GCC subprocesses) ---
+REM --- Ensure MinGW bin is in PATH (MSYS2 default install location) ---
 if exist "C:\msys64\mingw64\bin" (
     set "PATH=C:\msys64\mingw64\bin;%PATH%"
 )
@@ -184,7 +184,8 @@ set "BASE_CFLAGS=-Wall -Wstrict-prototypes -std=gnu11 -O2"
 set "INC_FLAGS=-I"%BLD_HDIR%""
 set "ENGINE_CFLAGS=%BASE_CFLAGS% %CDEFS% %INC_FLAGS%"
 
-REM Build configure executable
+REM Build configure.exe from the engine's self-configuration sources,
+REM then run it to detect platform settings (endianness, malloc bases, etc.)
 %CC% %ENGINE_CFLAGS% -DUSE_OWN_MALLOC -o "%BLD_OBJDIR%\configure.exe" "%BLD_CDIR%\configure.c" "%BLD_CDIR%\configure_main.c" "%BLD_CDIR%\own_mmap.c" "%BLD_CDIR%\win32_mman.c" -lkernel32
 if !ERRORLEVEL! neq 0 (
     echo   WARNING: Could not build configure.exe, using defaults
@@ -198,8 +199,8 @@ if !ERRORLEVEL! neq 0 (
     goto :use_default_configure
 )
 
-REM Prepend cdefs to configure.h
-REM NOTE: We use ^! to escape ! from delayed expansion eating it
+REM Prepend mandatory build flags to configure.h
+REM NOTE: We use ^! to escape ! from delayed expansion
 (
     echo #if ^!defined^(Win32^)
     echo #define Win32
@@ -220,7 +221,7 @@ echo   configure.h generated from configure.exe
 goto :configure_done
 
 :use_default_configure
-REM Use safe defaults for Win64
+REM Use safe defaults when configure.exe cannot run
 (
     echo /* Pre-configured for Win32 x86_64 */
     echo #if ^!defined^(Win32^)
@@ -276,7 +277,7 @@ set "ENG_CFILES=%ENG_CFILES% atomic_basic term_typing term_basic qread"
 set "ENG_CFILES=%ENG_CFILES% eng_debug eng_profile eng_interrupt gauge"
 set "ENG_CFILES=%ENG_CFILES% eng_bignum dtoa_ryu ciao_prolog eng_start"
 REM wamloop.c is #included by basiccontrol.c -- do NOT compile separately
-REM fix_size.c is a standalone utility, not part of the engine
+REM fix_size.c is a standalone utility, not compiled into the engine
 set "ENG_CFILES=%ENG_CFILES% version"
 REM win32_mman is needed for mmap emulation on Windows
 set "ENG_CFILES=%ENG_CFILES% win32_mman"
@@ -393,6 +394,9 @@ REM =========================================================
 echo.
 echo [8/9] Bootstrapping Prolog system ...
 
+REM Bootstrap the Prolog compiler and interactive toplevel.
+REM Uses the prebuilt ciaoc.sta (bootstrap .car archive) to compile
+REM the builder, toplevel (ciaosh), and compiler itself.
 set "BOOT_STA=%PROJECT_ROOT%\core\bootstrap\ciaoc.car\ciaoc.sta"
 set "CACHE_DIR=%PROJECT_ROOT%\build\cache"
 set "HEADER_FILE=%PROJECT_ROOT%\core\lib\compiler\header"

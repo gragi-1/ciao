@@ -1,12 +1,13 @@
 /*
  *  process_win32.c
  *
- *  Windows-native process creation for Ciao Prolog engine.
+ *  Process creation and management for the Windows native build.
  *
- *  Replaces fork()/exec() with CreateProcessW() for native Windows.
- *  Provides pipe redirection for stdin/stdout/stderr.
- *
- *  Applied as a supplementary compilation unit.
+ *  Replaces fork()/exec() with CreateProcessW(). Provides:
+ *    - UTF-8 argv to UTF-16 command line conversion
+ *    - Pipe-based stdin/stdout/stderr redirection
+ *    - Process wait with timeout support
+ *    - fork()/setsid()/execvp() stubs for POSIX compatibility
  */
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -34,11 +35,13 @@ typedef struct win32_process_info {
 } win32_process_info_t;
 
 /* ------------------------------------------------------------------ */
-/* Helper: Build command line string from argv array                  */
+/* Build a single UTF-16 command line from an argv array.             */
+/* CreateProcessW requires one flat string, not an argv vector.       */
+/* Arguments containing spaces or tabs are automatically quoted.      */
 /* ------------------------------------------------------------------ */
 
 static wchar_t *build_command_line(const char **argv) {
-    /* Calculate required buffer size */
+    /* Calculate required buffer size (quotes + space per arg + null) */
     size_t total = 0;
     int i;
     for (i = 0; argv[i] != NULL; i++) {
@@ -72,7 +75,10 @@ static wchar_t *build_command_line(const char **argv) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Helper: Create an inheritable pipe                                 */
+/* Create a pipe where one end is inheritable by the child process.   */
+/* inherit_read: TRUE  -> child reads  (stdin pipe)                   */
+/*               FALSE -> child writes (stdout/stderr pipe)           */
+/* The non-inherited end is kept for the parent side.                 */
 /* ------------------------------------------------------------------ */
 
 static int create_inheritable_pipe(HANDLE *read_handle, HANDLE *write_handle, 
@@ -97,23 +103,14 @@ static int create_inheritable_pipe(HANDLE *read_handle, HANDLE *write_handle,
 }
 
 /* ------------------------------------------------------------------ */
-/* Main process creation function                                     */
+/* Process creation with optional I/O redirection                     */
+/*                                                                    */
+/* Creates a child process via CreateProcessW. When redirect flags    */
+/* are set, pipes are created and the parent-side fds are stored in   */
+/* info->stdin_fd / stdout_fd / stderr_fd for the caller to use.     */
+/*                                                                    */
+/* Returns 0 on success, -1 on error (sets errno).                    */
 /* ------------------------------------------------------------------ */
-
-/*
- * Create a child process with optional I/O redirection.
- *
- * @param cmd       Path to the executable (UTF-8)
- * @param argv      NULL-terminated argument array (UTF-8)
- * @param cwd       Working directory (UTF-8, or NULL for inherit)
- * @param env       Environment block (NULL for inherit)
- * @param redirect_stdin  If non-zero, redirect child's stdin
- * @param redirect_stdout If non-zero, redirect child's stdout
- * @param redirect_stderr If non-zero, redirect child's stderr
- * @param info      Output: process info and pipe file descriptors
- *
- * @return 0 on success, -1 on error (sets errno)
- */
 int win32_create_process(
     const char *cmd,
     const char **argv,
@@ -245,7 +242,8 @@ error:
 }
 
 /* ------------------------------------------------------------------ */
-/* Wait for process termination                                       */
+/* Wait for process termination.                                      */
+/* Returns 0 if exited, 1 if still running (timeout), -1 on error.    */
 /* ------------------------------------------------------------------ */
 
 int win32_wait_process(win32_process_info_t *info, int *exit_code, DWORD timeout_ms) {
@@ -266,7 +264,8 @@ int win32_wait_process(win32_process_info_t *info, int *exit_code, DWORD timeout
 }
 
 /* ------------------------------------------------------------------ */
-/* Cleanup process handles                                            */
+/* Close all handles and pipe fds associated with a child process.    */
+/* Resets info to a clean state (all fds = -1).                       */
 /* ------------------------------------------------------------------ */
 
 void win32_close_process(win32_process_info_t *info) {
@@ -280,13 +279,10 @@ void win32_close_process(win32_process_info_t *info) {
 }
 
 /* ------------------------------------------------------------------ */
-/* fork() stub - returns error on Windows                             */
+/* fork() stub -- always fails with ENOSYS on Windows.                */
+/* Engine code calling fork() hits this; actual subprocess creation   */
+/* goes through win32_create_process() instead.                       */
 /* ------------------------------------------------------------------ */
-
-/*
- * fork() is not available on Windows. This stub returns -1 with ENOSYS.
- * Code that needs fork() semantics should use win32_create_process().
- */
 int win32_fork_stub(void) {
     fprintf(stderr, "ERROR: fork() is not supported on native Windows.\n"
                     "Use process creation APIs instead.\n");
@@ -295,16 +291,17 @@ int win32_fork_stub(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* setsid() stub                                                      */
+/* setsid() stub -- no session IDs on Windows, returns current PID.   */
 /* ------------------------------------------------------------------ */
 
 int win32_setsid_stub(void) {
-    /* No concept of session ID on Windows. No-op. */
     return (int)GetCurrentProcessId();
 }
 
 /* ------------------------------------------------------------------ */
-/* exec*() replacements using CreateProcess                           */
+/* execvp() replacement.                                              */
+/* Windows cannot replace the current process image, so we spawn the  */
+/* child, wait for it, and exit with its code.                        */
 /* ------------------------------------------------------------------ */
 
 int win32_execvp(const char *file, const char **argv) {
@@ -318,9 +315,8 @@ int win32_execvp(const char *file, const char **argv) {
     win32_wait_process(&info, &exit_code, INFINITE);
     win32_close_process(&info);
 
-    /* exec should not return - but on Windows we emulate by exiting with child's code */
     exit(exit_code);
-    return -1; /* Never reached */
+    return -1; /* unreachable */
 }
 
 #endif /* _WIN32 || _WIN64 */

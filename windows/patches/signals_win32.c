@@ -1,14 +1,15 @@
 /*
  *  signals_win32.c
  *
- *  Windows-native signal handling replacements for Ciao Prolog engine.
+ *  POSIX signal emulation for the Windows native build.
  *
- *  Replaces UNIX signal mechanisms with Windows equivalents:
- *  - Ctrl+C via SetConsoleCtrlHandler
- *  - Timer events via Windows timers
- *  - Structured exception handling for SIGSEGV/SIGFPE equivalents
- *
- *  Applied as a supplementary compilation unit.
+ *  Replaces UNIX signal delivery with Win32 equivalents:
+ *    - Ctrl+C via SetConsoleCtrlHandler
+ *    - alarm() via Win32 timer queue
+ *    - External interrupt via named event "CiaoInterrupt_{PID}"
+ *      (used by signal_ciao.exe / VS Code extension)
+ *    - signal()/kill() wrappers
+ *    - sigprocmask() stub (no-op)
  */
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -19,14 +20,14 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-/* Windows event objects replacing UNIX signals                       */
+/* Internal state                                                     */
 /* ------------------------------------------------------------------ */
 
-static HANDLE g_interrupt_event = NULL;
-static HANDLE g_alarm_event = NULL;
-static HANDLE g_alarm_timer = NULL;
-static HANDLE g_ext_interrupt_event = NULL;  /* named event for external interrupt */
-static HANDLE g_ext_interrupt_thread = NULL; /* watcher thread */
+static HANDLE g_interrupt_event = NULL;      /* set on any interrupt   */
+static HANDLE g_alarm_event = NULL;          /* set on alarm timer     */
+static HANDLE g_alarm_timer = NULL;          /* active alarm timer     */
+static HANDLE g_ext_interrupt_event = NULL;  /* named event for IPC    */
+static HANDLE g_ext_interrupt_thread = NULL; /* watcher thread handle  */
 static volatile LONG g_ext_interrupt_shutdown = 0;
 
 typedef void (*signal_handler_t)(int);
@@ -35,7 +36,7 @@ static signal_handler_t g_sigalrm_handler = SIG_DFL;
 static signal_handler_t g_sigusr1_handler = SIG_DFL;
 
 /* ------------------------------------------------------------------ */
-/* Ctrl+C Handler                                                     */
+/* Ctrl+C handler                                                     */
 /* ------------------------------------------------------------------ */
 
 static BOOL WINAPI win32_ctrl_handler(DWORD dwCtrlType) {
@@ -45,17 +46,14 @@ static BOOL WINAPI win32_ctrl_handler(DWORD dwCtrlType) {
             if (g_sigint_handler != SIG_DFL && g_sigint_handler != SIG_IGN) {
                 g_sigint_handler(SIGINT);
             } else if (g_sigint_handler == SIG_DFL) {
-                /* Default: terminate */
-                return FALSE; /* Let Windows handle it */
+                return FALSE; /* let Windows terminate */
             }
-            /* SIG_IGN: ignore */
             if (g_interrupt_event) SetEvent(g_interrupt_event);
             return TRUE;
 
         case CTRL_CLOSE_EVENT:
         case CTRL_LOGOFF_EVENT:
         case CTRL_SHUTDOWN_EVENT:
-            /* Graceful shutdown */
             if (g_interrupt_event) SetEvent(g_interrupt_event);
             return FALSE;
 
@@ -66,8 +64,10 @@ static BOOL WINAPI win32_ctrl_handler(DWORD dwCtrlType) {
 
 /* ------------------------------------------------------------------ */
 /* External interrupt watcher thread                                  */
-/* Waits on a named event "CiaoInterrupt_{PID}" so that external     */
-/* tools (e.g. VS Code extension) can deliver SIGINT to the engine.  */
+/*                                                                    */
+/* Waits on named event "CiaoInterrupt_{PID}" so that external tools  */
+/* (signal_ciao.exe, VS Code) can deliver SIGINT to the engine.       */
+/* Polls every 500ms to check the shutdown flag.                      */
 /* ------------------------------------------------------------------ */
 
 static DWORD WINAPI ext_interrupt_watcher(LPVOID param) {
@@ -85,7 +85,7 @@ static DWORD WINAPI ext_interrupt_watcher(LPVOID param) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Signal emulation layer                                             */
+/* Init / cleanup                                                     */
 /* ------------------------------------------------------------------ */
 
 int win32_signals_init(void) {
@@ -98,7 +98,7 @@ int win32_signals_init(void) {
 
     SetConsoleCtrlHandler(win32_ctrl_handler, TRUE);
 
-    /* Create named event for external interrupt signaling */
+    /* Create named event for external interrupt (VS Code, signal_ciao.exe) */
     {
         char evname[128];
         snprintf(evname, sizeof(evname), "CiaoInterrupt_%lu",
@@ -117,7 +117,7 @@ int win32_signals_init(void) {
 void win32_signals_cleanup(void) {
     SetConsoleCtrlHandler(win32_ctrl_handler, FALSE);
 
-    /* Shut down external interrupt watcher */
+    /* Shut down watcher thread */
     if (g_ext_interrupt_thread) {
         InterlockedExchange(&g_ext_interrupt_shutdown, 1);
         if (g_ext_interrupt_event) SetEvent(g_ext_interrupt_event);
@@ -144,10 +144,13 @@ void win32_signals_cleanup(void) {
     }
 }
 
-/*
- * win32_signal: Drop-in replacement for signal() for signals
- * not supported by the MSVC/MinGW CRT.
- */
+/* ------------------------------------------------------------------ */
+/* signal() replacement                                               */
+/*                                                                    */
+/* For signals the CRT doesn't handle (SIGALRM, SIGUSR1), we store   */
+/* the handler ourselves. CRT-supported signals pass through.         */
+/* ------------------------------------------------------------------ */
+
 signal_handler_t win32_signal(int sig, signal_handler_t handler) {
     signal_handler_t prev;
 
@@ -174,14 +177,12 @@ signal_handler_t win32_signal(int sig, signal_handler_t handler) {
             return prev;
 
         default:
-            /* For signals supported by CRT (SIGFPE, SIGSEGV, etc.),
-               fall through to the standard signal() */
             return signal(sig, handler);
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* alarm() replacement using Windows timer queue                      */
+/* alarm() replacement via timer queue                                */
 /* ------------------------------------------------------------------ */
 
 static VOID CALLBACK alarm_timer_callback(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
@@ -196,8 +197,8 @@ static VOID CALLBACK alarm_timer_callback(PVOID lpParam, BOOLEAN TimerOrWaitFire
     }
 }
 
+/* Schedule SIGALRM after `seconds`. Cancels any previous alarm. */
 unsigned int win32_alarm(unsigned int seconds) {
-    /* Cancel previous alarm */
     if (g_alarm_timer) {
         DeleteTimerQueueTimer(NULL, g_alarm_timer, INVALID_HANDLE_VALUE);
         g_alarm_timer = NULL;
@@ -212,11 +213,11 @@ unsigned int win32_alarm(unsigned int seconds) {
         return 0;
     }
 
-    return 0; /* Previous alarm time not tracked */
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
-/* Wait for interrupt event (blocking)                                */
+/* Blocking wait on interrupt event                                   */
 /* ------------------------------------------------------------------ */
 
 int win32_wait_interrupt(DWORD timeout_ms) {
@@ -226,10 +227,9 @@ int win32_wait_interrupt(DWORD timeout_ms) {
 }
 
 /* ------------------------------------------------------------------ */
-/* sigprocmask / sigaction stubs                                      */
+/* sigprocmask stub (no-op on Windows)                                */
 /* ------------------------------------------------------------------ */
 
-/* Minimal sigset_t operations for compatibility */
 #if !defined(SIG_BLOCK)
 #define SIG_BLOCK   0
 #define SIG_UNBLOCK 1
@@ -239,7 +239,6 @@ int win32_wait_interrupt(DWORD timeout_ms) {
 typedef unsigned long win32_sigset_t;
 
 int win32_sigprocmask(int how, const win32_sigset_t *set, win32_sigset_t *oldset) {
-    /* Windows doesn't have signal masks. This is a no-op stub. */
     static win32_sigset_t current_mask = 0;
     
     if (oldset) *oldset = current_mask;
@@ -256,14 +255,16 @@ int win32_sigprocmask(int how, const win32_sigset_t *set, win32_sigset_t *oldset
 }
 
 /* ------------------------------------------------------------------ */
-/* kill() enhancement for Windows                                     */
+/* kill() replacement                                                 */
+/*                                                                    */
+/* For self: dispatch via handler or raise(). For other processes:     */
+/* sig == 0 checks existence, otherwise TerminateProcess.             */
 /* ------------------------------------------------------------------ */
 
 int win32_kill(int pid, int sig) {
     HANDLE hProcess;
 
     if (pid == 0 || pid == (int)GetCurrentProcessId()) {
-        /* Send signal to self */
         if (sig == SIGINT) {
             if (g_sigint_handler && g_sigint_handler != SIG_DFL && g_sigint_handler != SIG_IGN) {
                 g_sigint_handler(sig);
@@ -283,7 +284,6 @@ int win32_kill(int pid, int sig) {
         return -1;
     }
 
-    /* For other processes, the only option is TerminateProcess */
     hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
     if (!hProcess) {
         errno = ESRCH;

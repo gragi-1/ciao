@@ -31,7 +31,8 @@ if (Test-Path $InstallDir) {
     Remove-Item $InstallDir -Recurse -Force
 }
 
-# Detect whether dist/ subfolder exists (running from repo) or we're in the zip
+# Detect source layout: running from extracted zip vs. repo checkout.
+# The zip has bin/ at top level; the repo has dist/windows-static/bin/.
 $distDir = if (Test-Path "$scriptDir\bin\ciao.exe") {
     # Running from extracted zip (already has correct layout: bin/ core/ builder/)
     $scriptDir
@@ -46,7 +47,8 @@ $distDir = if (Test-Path "$scriptDir\bin\ciao.exe") {
     exit 1
 }
 
-# Check if source has the correct layout (core/lib/) or old flat layout (lib/core/)
+# The old build layout puts everything under lib/ (flat), but the engine
+# expects core/lib/, core/library/, etc. Reorganize if needed.
 $needsReorg = (Test-Path "$distDir\lib\core") -and -not (Test-Path "$distDir\core\lib")
 
 if ($needsReorg) {
@@ -211,6 +213,8 @@ if ($extDirs.Count -gt 0) {
     $extDir = $extDirs[0].FullName
     $jsFile = Join-Path $extDir 'out\client\src\extension.js'
 
+    # Patches are applied from a backup so re-running the installer is safe.
+    # Each patch targets specific minified JS patterns in extension.js.
     if (Test-Path $jsFile) {
         $bakFile = "$jsFile.bak"
         if (-not (Test-Path $bakFile)) {
@@ -246,7 +250,8 @@ if ($extDirs.Count -gt 0) {
             'a={shell:"/bin/bash",...t}' `
             'a={shell:process.platform==="win32"?"cmd.exe":"/bin/bash",...t}'
 
-        # PATCH 4: loadPATHVersion
+        # PATCH 4: loadPATHVersion - find ciao.exe via 'where' on Windows,
+        # and locate CIAOROOT by searching upward for the core/ directory.
         Apply-Patch 'loadPATHVersion' `
             'async loadPATHVersion(){let e=["/bin/bash","/bin/zsh","/bin/csh"],t;for(let r of e){let{exitCode:i,stdout:s}=await wn("which",["ciao"],{shell:r});if(i===3){t=s;break}}t!==void 0&&(await this.addVersion("$PATH",yi.default.resolve(yi.default.dirname(t),"..","..")),this.setActiveVersion("$PATH"))}' `
             'async loadPATHVersion(){let t;if(process.platform==="win32"){let{exitCode:i,stdout:s}=await wn("where",["ciao.exe"],{shell:"cmd.exe"});if(i===3){t=s.split("\r\n")[0]}}else{let e=["/bin/bash","/bin/zsh","/bin/csh"];for(let r of e){let{exitCode:i,stdout:s}=await wn("which",["ciao"],{shell:r});if(i===3){t=s;break}}}if(t!==void 0){let proot;if(process.platform==="win32"){let d=yi.default.dirname(t),fs=require("fs"),c=d;for(let i=0;i<5;i++){if(fs.existsSync(yi.default.join(c,"core"))){proot=c;break}c=yi.default.dirname(c)}if(!proot)proot=yi.default.resolve(d,"..")}else{proot=yi.default.resolve(yi.default.dirname(t),"..","..")}await this.addVersion("$PATH",proot);this.setActiveVersion("$PATH")}}'
@@ -256,7 +261,8 @@ if ($extDirs.Count -gt 0) {
             'async loadCIAOROOTVersions(){let e=yi.default.join((0,dh.homedir)(),".ciaoroot"),t;try{t=await lh.default.readdir(e,{withFileTypes:!0})}catch{throw new Error(`Could not read Ciao versions from \`${e}\`.`)}' `
             'async loadCIAOROOTVersions(){let e=yi.default.join((0,dh.homedir)(),".ciaoroot"),t;try{t=await lh.default.readdir(e,{withFileTypes:!0})}catch{if(process.platform==="win32")return;throw new Error(`Could not read Ciao versions from \`${e}\`.`)}'
 
-        # PATCH 6: loadEnv
+        # PATCH 6: loadEnv - on Windows, build env vars from directory layout
+        # instead of running the Unix ciao-env shell script.
         Apply-Patch 'loadEnv' `
             'async loadEnv(){let e=oh.default.join(this._path,"build","bin","ciao-env");await sh.default.stat(e);let{exitCode:t,stdout:r}=await wn(e,["--sh"]);if(t!==3)throw new Error(`The \`ciao-env\` script of Ciao version "${this.name}" failed.`);return this._env=r.split(`' `
             'async loadEnv(){if(process.platform==="win32"){let b=this._path,bd;try{let wp=oh.default.join(b,"build","windows-native","bin","ciao.exe");await sh.default.stat(wp);bd=oh.default.join(b,"build","windows-native","bin")}catch{bd=oh.default.join(b,"bin")}let fr=b.replace(/\\/g,"/"),fd=bd.replace(/\\/g,"/");this._env={CIAOROOT:fr,CIAOPATH:fr,CIAOHDIR:oh.default.dirname(bd),CIAOENGINE:oh.default.join(bd,"ciao.exe"),CIAOALIASPATH:"ciaobld="+fr+"/builder/src;lpdoc="+fr+"/lpdoc/src;lpdoc_etc="+fr+"/lpdoc/etc;library="+fr+"/lpdoc/lib",PATH:bd+";"+(process.env.PATH||"")};return this}let e=oh.default.join(this._path,"build","bin","ciao-env");await sh.default.stat(e);let{exitCode:t,stdout:r}=await wn(e,["--sh"]);if(t!==3)throw new Error(`The \`ciao-env\` script of Ciao version "${this.name}" failed.`);return this._env=r.split(`'
@@ -284,7 +290,9 @@ function it(n){if(process.platform==="win32"){n=n.replace(/\\/g,"/");return`'${n
             'function ma(n){let e=n.split(Or.sep);return e[0].endsWith(":")?(e[0]=`/mnt/${e[0].slice(0,e[0].length-1)}`,e.join(Or.sep)):n}' `
             'function ma(n){if(process.platform==="win32")return n;let e=n.split(Or.sep);return e[0].endsWith(":")?(e[0]=`/mnt/${e[0].slice(0,e[0].length-1)}`,e.join(Or.sep)):n}'
 
-        # PATCH 11: interrupt
+        # PATCH 11: interrupt - use signal_ciao.exe to send named event
+        # instead of SIGINT (which doesn't work reliably on Windows).
+        # Double Ctrl+C within 2s falls back to hard kill.
         $installDirJS = $InstallDir -replace '\\', '\\\\'
         Apply-Patch 'interrupt' `
             'interrupt(){return new Promise(e=>{this.resolveCommand=e,this.cproc?.kill("SIGINT")})}' `

@@ -1,11 +1,16 @@
 /*
  *  win32_native.h
  *
- *  Master include for Windows native build of Ciao Prolog engine.
- *  Include this from eng.h when WIN32_NATIVE is defined.
+ *  POSIX compatibility layer for building Ciao Prolog on native Windows.
  *
- *  This header pulls in all Windows-specific compatibility
- *  definitions, replacing POSIX calls with Win32 API equivalents.
+ *  Included from eng.h when WIN32_NATIVE is defined. Provides:
+ *    - Windows SDK headers
+ *    - POSIX constants (STDIN_FILENO, F_OK, signal numbers, etc.)
+ *    - POSIX types for non-MinGW compilers (pid_t, uid_t, ...)
+ *    - Declarations for Win32 replacements (windows/patches/*.c)
+ *    - Macro redirects so engine code compiles without #ifdef changes
+ *
+ *  The build script copies this to include/ciao/win32_native.h.
  */
 
 #ifndef _CIAO_WIN32_NATIVE_H
@@ -13,7 +18,8 @@
 
 #if defined(WIN32_NATIVE) || (defined(_WIN32) && !defined(__CYGWIN__) && !defined(__MSYS__))
 
-/* ---- Windows headers ---- */
+/* --- Windows headers --- */
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -24,31 +30,29 @@
 #include <fcntl.h>
 #include <signal.h>
 
-/* ---- POSIX compatibility defines ---- */
+/* --- POSIX constants --- */
 
-/* File descriptor operations */
 #ifndef STDIN_FILENO
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 #endif
 
-/* Access mode flags */
 #ifndef F_OK
 #define F_OK 0
 #define R_OK 4
 #define W_OK 2
-#define X_OK 0  /* Not meaningful on Windows */
+#define X_OK 0  /* not meaningful on Windows */
 #endif
 
-/* Map POSIX names to Windows CRT names.
- * NOTE: MinGW-w64 provides most POSIX names natively (access, getcwd, etc.)
- * so we only define mappings for compilers that truly lack them (e.g. MSVC).
- * IMPORTANT: Do NOT define 'access' as a macro -- it conflicts with
- * token-pasting in eng_errcodes.h (ERR_permission_error uses 'access'
- * as a paste argument, producing _permission_perm__access). */
+/*
+ * POSIX-to-CRT name mappings (MSVC only).
+ * MinGW provides POSIX names natively; these are only needed for MSVC.
+ *
+ * NOTE: Do NOT define `access` as a macro -- eng_errcodes.h uses it
+ * as a token-paste argument in ERR_permission_error.
+ */
 #if defined(_MSC_VER) && !defined(__MINGW32__)
-/* MSVC-only POSIX compat mappings */
 #ifndef getcwd
 #define getcwd    _getcwd
 #endif
@@ -101,6 +105,7 @@
 #define snprintf  _snprintf
 #endif
 #endif /* _MSC_VER && !__MINGW32__ */
+
 #ifndef strcasecmp
 #define strcasecmp _stricmp
 #endif
@@ -108,7 +113,9 @@
 #define strncasecmp _strnicmp
 #endif
 
-/* Signal numbers not defined in MinGW CRT */
+/* Signal numbers not defined by the Windows CRT.
+ * Standard POSIX values; delivery is handled by signals_win32.c. */
+
 #ifndef SIGALRM
 #define SIGALRM 14
 #endif
@@ -131,7 +138,9 @@
 #define SIGHUP  1
 #endif
 
-/* Process status macros */
+/* Process status macros.
+ * Windows exit codes are plain integers; no signal-termination concept. */
+
 #ifndef WIFEXITED
 #define WIFEXITED(x)   1
 #define WEXITSTATUS(x) ((x) & 0xFF)
@@ -140,9 +149,9 @@
 #define WNOHANG        1
 #endif
 
-/* ---- Types ---- */
-/* MinGW-w64 already provides pid_t, uid_t, gid_t, mode_t, ssize_t
-   via sys/types.h. Only define if truly missing (non-MinGW compilers). */
+/* --- POSIX types (non-MinGW compilers only) ---
+ * MinGW-w64 provides these via sys/types.h. */
+
 #if !defined(__MINGW32__) && !defined(__MINGW64__)
 #ifndef _PID_T_DEFINED
 typedef int pid_t;
@@ -166,7 +175,8 @@ typedef intptr_t ssize_t;
 #endif
 #endif /* !__MINGW32__ && !__MINGW64__ */
 
-/* ---- Directory separator ---- */
+/* --- Path separators --- */
+
 #ifndef PATHSEP
 #define PATHSEP "\\"
 #endif
@@ -174,7 +184,8 @@ typedef intptr_t ssize_t;
 #define PATHLISTSEP ";"
 #endif
 
-/* ---- Function declarations from windows/patches/ ---- */
+/* --- Win32 replacement function declarations ---
+ * Implemented in windows/patches/*.c, compiled alongside the engine. */
 
 /* io_basic_win32.c */
 extern int win32_normalize_path(const char *posix_path, char *win_path, size_t bufsize);
@@ -206,7 +217,9 @@ extern const char *win32_get_homedir(void);
 extern unsigned int win32_sleep(unsigned int seconds);
 extern int win32_usleep(unsigned int usec);
 
-/* ---- Redirect POSIX calls to Win32 implementations ---- */
+/* --- POSIX-to-Win32 macro redirects ---
+ * Transparent redirection so engine .c files compile without changes. */
+
 #define fork()            win32_fork_stub()
 #define setsid()          win32_setsid_stub()
 #define alarm(s)          win32_alarm(s)

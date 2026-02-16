@@ -92,6 +92,7 @@ void *win32_shm_open(const char *name, size_t size, int create) {
     return ptr;
 }
 
+/* Unmap and close a shared memory region by name. */
 int win32_shm_close(const char *name) {
     int i;
     for (i = 0; i < g_shm_count; i++) {
@@ -277,20 +278,17 @@ struct win32_passwd *win32_getpwuid(int uid) {
 /* Miscellaneous POSIX stubs                                          */
 /* ------------------------------------------------------------------ */
 
-/* Windows doesn't need sync() - it has FlushFileBuffers */
 void win32_sync(void) {
-    /* No-op on Windows. The OS handles disk caching. */
+    /* No-op: Windows handles disk caching via the kernel. */
 }
 
-/* sleep() - Windows has Sleep() in milliseconds */
 unsigned int win32_sleep(unsigned int seconds) {
     Sleep(seconds * 1000);
     return 0;
 }
 
-/* usleep() replacement */
+/* Sub-millisecond delays use a spin-wait since Sleep() has 1ms granularity. */
 int win32_usleep(unsigned int usec) {
-    /* Windows minimum is 1ms via Sleep, use waitable timer for better accuracy */
     if (usec >= 1000) {
         Sleep(usec / 1000);
     } else if (usec > 0) {
@@ -306,7 +304,7 @@ int win32_usleep(unsigned int usec) {
     return 0;
 }
 
-/* gettimeofday replacement */
+/* FILETIME epoch (1601-01-01) to Unix epoch (1970-01-01) conversion. */
 int win32_gettimeofday(struct timeval *tv) {
     FILETIME ft;
     ULARGE_INTEGER ull;
@@ -315,9 +313,7 @@ int win32_gettimeofday(struct timeval *tv) {
     ull.LowPart = ft.dwLowDateTime;
     ull.HighPart = ft.dwHighDateTime;
     
-    /* FILETIME is 100-nanosecond intervals since January 1, 1601 */
-    /* Unix epoch is January 1, 1970 */
-    ull.QuadPart -= 116444736000000000ULL;
+    ull.QuadPart -= 116444736000000000ULL; /* 100ns ticks between epochs */
     
     tv->tv_sec = (long)(ull.QuadPart / 10000000);
     tv->tv_usec = (long)((ull.QuadPart % 10000000) / 10);
