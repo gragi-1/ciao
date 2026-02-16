@@ -12,6 +12,31 @@
 
 #include <string.h>
 #include <fcntl.h>
+#if (defined(_WIN32) || defined(_WIN64)) && !defined(WIN32_NATIVE)
+#include <io.h>
+#include <direct.h>
+#include <process.h>
+#define access _access
+#define getcwd _getcwd
+#define chdir _chdir
+#define mkdir(p,m) _mkdir(p)
+#define rmdir _rmdir
+#define unlink _unlink
+#define stat _stat
+#define fstat _fstat
+#define open _open
+#define close _close
+#define read _read
+#define write _write
+#define dup _dup
+#define dup2 _dup2
+#define F_OK 0
+#define R_OK 4
+#define W_OK 2
+#define X_OK 0 /* X_OK not meaningful on Windows */
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#else
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/param.h>
@@ -47,6 +72,8 @@
 #include <sys/wait.h>
 #include <pwd.h>
 #endif
+
+#endif /* defined(_WIN32) || defined(_WIN64) -- top-level MSVC vs POSIX guard */
 
 #include <ciao/eng.h>
 
@@ -106,7 +133,7 @@ char cwd[MAXPATHLEN];/* Should be private --- each thread may cd freely! */
 /* using the Windows native API (not POSIX) */
 bool_t using_windows(void)
 {
-#if defined(Win32) /* Cygwin||MSYS2||MinGW */
+#if defined(Win32) || defined(WIN32_NATIVE) /* Cygwin||MSYS2||MinGW||Native */
 #if defined(_WIN32) || defined(_WIN64) /* MinGW */
   return TRUE;
 #else
@@ -124,7 +151,7 @@ CBOOL__PROTO(prolog_using_windows)
 
 /* --------------------------------------------------------------------------- */
 
-#if defined(Win32) /* Cygwin||MSYS2||MinGW */
+#if defined(Win32) || defined(WIN32_NATIVE) /* Cygwin||MSYS2||MinGW||Native */
 #define DriveLen 2
 inline bool_t path_has_drive_selector(const char *path) {
   return (isalpha(path[0]) && path[1]==':' &&
@@ -166,7 +193,7 @@ bool_t expand_file_name(const char *name, bool_t abs, char *target) {
       strcmp(name, "NUL") == 0) abs = FALSE;
 #endif
   
-#if defined(Win32) /* Cygwin||MSYS2||MinGW */
+#if defined(Win32) || defined(WIN32_NATIVE) /* Cygwin||MSYS2||MinGW||Native */
   char src_buff[MAXPATHLEN];
   /* Replace '\\' by '/' (for Cygwin and MinGW) */
   {
@@ -221,7 +248,7 @@ bool_t expand_file_name(const char *name, bool_t abs, char *target) {
   case '~':        /* home directory */
     goto homepath;
   default:
-#if defined(Win32)
+#if defined(Win32) || defined(WIN32_NATIVE)
     if (path_has_drive_selector(src)) goto drivepath;
 #endif
     if (abs) {
@@ -289,9 +316,9 @@ bool_t expand_file_name(const char *name, bool_t abs, char *target) {
   }
   goto next;
 
-#if defined(Win32)
+#if defined(Win32) || defined(WIN32_NATIVE)
  drivepath:
-#if defined(_WIN32) || defined(_WIN64) /* MinGW */
+#if defined(_WIN32) || defined(_WIN64) || defined(WIN32_NATIVE) /* MinGW||Native */
   /* X: or x: --> x: */
   TARGET_ADD(tolower(*src));
   TARGET_ADD(':');
@@ -355,6 +382,9 @@ bool_t expand_file_name(const char *name, bool_t abs, char *target) {
     if (d > 1 && target[d-1] == '/') d--;
   }
   TARGET_ADD(0);
+  /* NOTE: Do NOT convert to backslashes here. Ciao's Prolog-level path
+     handling (path_split, path_basename, etc.) expects forward slashes.
+     Windows file APIs accept forward slashes too. */
   return TRUE;
 }
 
@@ -1216,7 +1246,16 @@ CBOOL__PROTO(prolog_current_host) {
 
 CBOOL__PROTO(prolog_c_winpath) /* EMM */
 {
-#if defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
+#if defined(WIN32_NATIVE)
+  char *posixpath;
+  char winpath[MAXPATHLEN + 1];
+  DEREF(X(0),X(0));
+  posixpath = GetString(X(0));
+  if (win32_normalize_path(posixpath, winpath, sizeof(winpath)) != 0) {
+    return FALSE;
+  }
+  CBOOL__LASTUNIFY(GET_ATOM(winpath), X(1));
+#elif defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
   /* MSYS2/Cygwin */
   char *posixpath;
   char winpath[MAX_PATH + 1];
@@ -1231,7 +1270,16 @@ CBOOL__PROTO(prolog_c_winpath) /* EMM */
 
 CBOOL__PROTO(prolog_c_winfile) /* EMM */
 {
-#if defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
+#if defined(WIN32_NATIVE)
+  char *posixpath;
+  char winpath[MAXPATHLEN + 1];
+  DEREF(X(0),X(0));
+  posixpath = GetString(X(0));
+  if (win32_normalize_path(posixpath, winpath, sizeof(winpath)) != 0) {
+    return FALSE;
+  }
+  CBOOL__LASTUNIFY(GET_ATOM(winpath), X(1));
+#elif defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
   /* MSYS2/Cygwin */
   char *posixpath;
   char winpath[MAX_PATH + 1];
@@ -1246,7 +1294,16 @@ CBOOL__PROTO(prolog_c_winfile) /* EMM */
 
 CBOOL__PROTO(prolog_c_posixpath) /* EMM */
 {
-#if defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
+#if defined(WIN32_NATIVE)
+  char *winpath;
+  char posixpath[MAXPATHLEN + 1];
+  DEREF(X(0),X(0));
+  winpath = GetString(X(0));
+  if (win32_to_posix_path(winpath, posixpath, sizeof(posixpath)) != 0) {
+    return FALSE;
+  }
+  CBOOL__LASTUNIFY(GET_ATOM(posixpath), X(1));
+#elif defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
   /* MSYS2/Cygwin */
   char *winpath;
   char posixpath[MAX_PATH + 1];
@@ -1261,7 +1318,16 @@ CBOOL__PROTO(prolog_c_posixpath) /* EMM */
 
 CBOOL__PROTO(prolog_c_posixfile) /* EMM */
 {
-#if defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
+#if defined(WIN32_NATIVE)
+  char *winpath;
+  char posixpath[MAXPATHLEN + 1];
+  DEREF(X(0), X(0));
+  winpath = GetString(X(0));
+  if (win32_to_posix_path(winpath, posixpath, sizeof(posixpath)) != 0) {
+    return FALSE;
+  }
+  CBOOL__LASTUNIFY(GET_ATOM(posixpath), X(1));
+#elif defined(Win32) && !defined(_WIN32) && !defined(_WIN64)
   /* MSYS2/Cygwin */
   char *winpath;
   char posixpath[MAX_PATH + 1];
@@ -1593,7 +1659,7 @@ CBOOL__PROTO(prolog_getpid) {
 
 /* Get UID (unavailable in non-POSIX systems) */
 CBOOL__PROTO(prolog_getuid) {
-#if defined(_WIN32) || defined(_WIN64)
+#if (defined(_WIN32) || defined(_WIN64)) && !defined(WIN32_NATIVE)
   SERIOUS_FAULT("TODO(MinGW): getuid is not available in non-POSIX systems");
 #else
   tagged_t x0;
@@ -1604,7 +1670,7 @@ CBOOL__PROTO(prolog_getuid) {
 
 /* Get GID (unavailable in non-POSIX systems) */
 CBOOL__PROTO(prolog_getgid) {
-#if defined(_WIN32) || defined(_WIN64)
+#if (defined(_WIN32) || defined(_WIN64)) && !defined(WIN32_NATIVE)
   SERIOUS_FAULT("TODO(MinGW): getgid is not available in non-POSIX systems");
 #else
   tagged_t x0;
@@ -1617,7 +1683,8 @@ CBOOL__PROTO(prolog_getgid) {
 CBOOL__PROTO(prolog_getgrnam)
 {
 #if defined(_WIN32) || defined(_WIN64)
-  SERIOUS_FAULT("TODO(MinGW): getgrnam is not available in non-POSIX systems");
+  /* getgrgid/getgid not available on Windows */
+  CBOOL__LASTUNIFY(X(0), GET_ATOM("Users"));
 #else
   tagged_t x0;
   struct group * g;
@@ -1738,7 +1805,7 @@ CBOOL__PROTO(prolog_find_file) {
   suffix = GetString(X(3));
 
   if (path[0] == '/' || path[0] == '$' || path[0] == '~'
-#if defined(Win32)
+#if defined(Win32) || defined(WIN32_NATIVE)
       || path[0] == '\\' || path_has_drive_selector(path)
 #endif
       ) {
@@ -1856,7 +1923,7 @@ CBOOL__PROTO(prolog_find_file) {
 /* --------------------------------------------------------------------------- */
 
 static bool_t c_path_is_absolute(const char *path) {
-#if defined(Win32)
+#if defined(Win32) || defined(WIN32_NATIVE)
   if (path_has_drive_selector(path)) return TRUE;
 #endif
   return (path[0] == '/');

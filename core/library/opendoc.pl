@@ -37,9 +37,17 @@ opendoc(Path, Opts) :-
     ( Viewer = emacs(EmacsFun) -> view_in_emacs(EmacsFun, Path2)
     ; Viewer = osascript -> view_in_osascript(Path2)
     ; % Viewer = generic
-      generic_viewer(ViewerCmd),
-      process_call(path(ViewerCmd), [Path], [])
+      ( generic_viewer(ViewerCmd) ->
+          process_call(path(ViewerCmd), [Path], [])
+      ; get_os('Win32') ->
+          view_in_win32(Path)
+      ; fail
+      )
     ).
+
+view_in_win32(Path) :-
+    absolute_file_name(Path, AbsPath),
+    process_call(path('cmd'), ['/c', 'start', '""', AbsPath], [status(_)]).
 
 % ---------------------------------------------------------------------------
 
@@ -124,8 +132,8 @@ esc_code(X) --> [X].
 
 % Generic document viewer
 generic_viewer('open') :- get_os('DARWIN'), !.
-generic_viewer('cygstart') :- get_os('Win32'), !.
-%viewer('start') :- get_os('Win32'), !.
+generic_viewer('cygstart') :- get_os('Win32'),
+    find_executable('cygstart', _), !.
 generic_viewer(Viewer) :- get_os('LINUX'), !,
     ( X = 'wslview' % try this first for WSL
     ; X = 'xdg-open'

@@ -16,6 +16,12 @@
 #include <ciao/internals.h>
 #include <ciao/eng_start.h>
 
+#if defined(WIN32_NATIVE)
+/* Windows native: use SetConsoleCtrlHandler instead of SIGNAL for SIGINT */
+extern int win32_signals_init(void);
+extern void win32_signals_cleanup(void);
+#endif
+
 static void abortmsg(int rc);
 
 /* I/O predicate at ^C, else NULL */

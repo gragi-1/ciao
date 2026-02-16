@@ -194,7 +194,12 @@ do { if (mips_try_lock(p)) break;                               \
 #if defined(LINUX)||defined(EMSCRIPTEN)||defined(Solaris)||defined(DARWIN)||defined(BSD)
 #define HAVE_LIB_LOCKS 1
 
+#if defined(WIN32_NATIVE) && !defined(__PTHREAD_H)
+/* Use Windows native threads */
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 #include <unistd.h>
 #include <errno.h>
 
@@ -443,7 +448,12 @@ void reset_counter(void);
 /* ------------------------------------------------------------------------- */
 
 #if defined(USE_POSIX_THREADS)
+#if defined(WIN32_NATIVE) && !defined(__PTHREAD_H)
+/* Use Windows native threads */
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 extern pthread_attr_t detached_thread;
 extern pthread_attr_t joinable_thread;
@@ -572,7 +582,9 @@ typedef LPTHREAD_START_ROUTINE  THREAD_START; /* The type of the routine */
 
 #if defined(Solaris)||defined(LINUX)||defined(EMSCRIPTEN)||defined(Win32)||defined(BSD)
 #include <sys/types.h>
+#if !defined(WIN32_NATIVE)
 #include <sys/wait.h>
+#endif
 #endif
 
 typedef intptr_t THREAD_T;
@@ -590,7 +602,11 @@ typedef void *(*THREAD_START)(void *);
 #define Thread_Exit(status)    exit(0)           /* Not correct, actually */
 #define Allow_Thread_Cancel
 #define Disallow_Thread_Cancel
+#if defined(WIN32_NATIVE)
+#define Thread_Cancel(Id) TerminateProcess(GetCurrentProcess(), 1)
+#else
 #define Thread_Cancel(Id) kill(Thread_Id, SIGTERM)
+#endif
 #define Thread_Equal(thr1, thr2) (thr1 == thr2)
 
 #endif /* defined(USE_THREADS) */

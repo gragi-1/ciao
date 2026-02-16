@@ -10,6 +10,9 @@
 #define _CIAO_ENG_H
 
 #include <ciao/eng_predef.h>
+#if defined(WIN32_NATIVE)
+#include <ciao/win32_native.h>
+#endif
 #include <ciao/os_threads.h>
 
 #include <ciao/eng_terms.h>

@@ -30,7 +30,10 @@
 /* NOTE: Use sigprocmask() for sigblock() */ 
 /* NOTE: Use sigsuspend() for sigpause() */ 
 
-#if defined(Solaris)
+#if defined(WIN32_NATIVE)
+#include <ciao/win32_native.h>
+#define SIGNAL win32_signal
+#elif defined(Solaris)
 #define SIGNAL(SIG,HDL) {                       \
   struct sigaction act;                         \
   sigemptyset(&act.sa_mask);                    \
@@ -41,5 +44,31 @@
 #else
 #define SIGNAL signal
 #endif
+
+
+#if defined(WIN32_NATIVE)
+/* Windows native: additional signal compatibility */
+#if !defined(SIGALRM)
+#define SIGALRM 14
+#endif
+#if !defined(SIGUSR1)
+#define SIGUSR1 30
+#endif
+#if !defined(SIGUSR2)
+#define SIGUSR2 31
+#endif
+#if !defined(SIGPIPE)
+#define SIGPIPE 13
+#endif
+#if !defined(SIGBUS)
+#define SIGBUS  7
+#endif
+#if !defined(SIGQUIT)
+#define SIGQUIT 3
+#endif
+#if !defined(SIGHUP)
+#define SIGHUP  1
+#endif
+#endif /* WIN32_NATIVE */
 
 #endif /* _CIAO_OS_SIGNAL_H */

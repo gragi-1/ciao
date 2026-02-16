@@ -62,10 +62,10 @@ static void init_frequency_info(void) {
 #endif
 
 struct tms {
-  u_int tms_utime;
-  u_int tms_stime;
-  u_int tms_cutime;
-  u_int tms_cstime;
+  unsigned int tms_utime;
+  unsigned int tms_stime;
+  unsigned int tms_cutime;
+  unsigned int tms_cstime;
 };
 
 /* Own definition for times() */
@@ -85,9 +85,9 @@ clock_t times(struct tms *info) {
     return 0;
   }
   val = ((int64_t)stime.dwHighDateTime << 32) + stime.dwLowDateTime;
-  info->tms_stime = (u_int)((val+bias) / factor);
+  info->tms_stime = (unsigned int)((val+bias) / factor);
   val = ((int64_t)utime.dwHighDateTime << 32) + utime.dwLowDateTime;
-  info->tms_utime = (u_int)((val+bias) / factor);
+  info->tms_utime = (unsigned int)((val+bias) / factor);
 
   info->tms_cstime = 0;
   info->tms_cutime = 0;

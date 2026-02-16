@@ -27,4 +27,12 @@
 #define PATHSEP "/"
 #endif
 
+
+/* Windows native build marker */
+#if defined(WIN32_NATIVE)
+#if !defined(MAXPATHLEN)
+#define MAXPATHLEN 260
+#endif
+#endif
+
 #endif /* _CIAO_OS_DEFS_H */

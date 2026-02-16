@@ -22,10 +22,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#include <windows.h>
+#if defined(WIN32_NATIVE)
+/* MinGW-w64 provides read/write/close/fileno/isatty natively.
+   Do NOT #define these — it would poison struct member names like
+   stream_node_t.isatty. */
 #include <unistd.h>
-#if defined(_WIN32) || defined(_WIN64) /* MinGW */
 #else
-#include <sys/select.h> /* select() */ 
+/* MSVC: need CRT underscore-prefix name mappings */
+#define read _read
+#define write _write
+#define close _close
+#define fileno _fileno
+#define isatty _isatty
+#endif
+#else
+#include <unistd.h>
+#include <sys/select.h>
 #endif
 
 /* TODO: improve stream abstraction and separate generic code */
@@ -1765,9 +1780,24 @@ CBOOL__PROTO(prolog_set_unbuf) {
 
 CBOOL__PROTO(prolog_input_wait) {
   ERR__FUNCTOR("io_basic:$input_wait", 3);
-#if defined(_WIN32) || defined(_WIN64) /* MinGW */
-#warning "TODO(MinGW): we need select() in io_basic:$input_wait"
-  CBOOL__PROCEED; 
+#if defined(WIN32_NATIVE)
+  int errcode;
+  stream_node_t *s = stream_to_ptr_check(X(0), 'r', &errcode);
+  if (!s) {
+    BUILTIN_ERROR(errcode,X(0),1);
+  }
+
+  if (s->pending_rune != RUNE_VOID) { /* RUNE_EOF or valid rune */
+    CBOOL__PROCEED;
+  }
+
+  if (s->isatty || fileno(s->streamfile) == fileno(stdin)) {
+    int ready = win32_stdin_ready();
+    CBOOL__LASTTEST(ready != 0);
+  }
+
+  /* For non-tty streams, assume data is available */
+  CBOOL__PROCEED;
 #else
   int errcode;
   stream_node_t *s = stream_to_ptr_check(X(0), 'r', &errcode);

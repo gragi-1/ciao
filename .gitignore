@@ -58,3 +58,6 @@ bndls/ciao_java/lib/javall/javadoc/package-list
 bndls/ciao_java/lib/javall/plserver
 ciaopp_java/ilciao/classes/*
 ciaopp_cost/resources/predefres/res_exectime_hlm/auto/*
+# Windows native build artifacts
+/dist/
+/lpdoc/

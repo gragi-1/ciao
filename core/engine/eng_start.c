@@ -19,7 +19,7 @@
 #include <ciao/os_defs.h>
 
 #if defined(_WIN32) || defined(_WIN64) /* MinGW */
-//#include <winsock2.h>
+#include <winsock2.h>
 #include <windows.h>
 #endif
 #if defined(Win32) && !(defined(_WIN32) || defined(_WIN64)) /* MSYS2/Cygwin */
@@ -31,6 +31,13 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <limits.h>
+
+#if defined(WIN32_NATIVE)
+extern int win32_console_init(void);
+extern void win32_console_cleanup(void);
+extern int win32_signals_init(void);
+extern void win32_signals_cleanup(void);
+#endif
 
 #if defined(DARWIN) /* for get_execpath() */
 #include <mach-o/dyld.h>
@@ -238,6 +245,15 @@ void engine_init(const char *boot_path, const char *exec_path) {
   init_winsock2();
 #endif  
 
+#if defined(WIN32_NATIVE)
+  if (win32_console_init() != 0) {
+    SERIOUS_FAULT("win32 console init failed");
+  }
+  if (win32_signals_init() != 0) {
+    SERIOUS_FAULT("win32 signals init failed");
+  }
+#endif
+
   init_alloc();
 
   tzset();                                       /* Initialize time zone information */
@@ -426,6 +442,7 @@ void set_ciaoroot_directory(const char *boot_path, const char *exec_path) {
       const char *aux = default_ciaoroot;
 #if defined(_WIN32) || defined(_WIN64)
 #warning "TODO(MinGW): check that normalize path of ciaoroot_directory is ok"
+      ciaoroot_directory = checkalloc_ARRAY(char, MAXPATHLEN);
       expand_file_name(aux,TRUE,ciaoroot_directory);
 #else
       cygwin_conv_to_full_posix_path(aux, ciaoroot_directory);
@@ -542,6 +559,10 @@ static void guess_win32_env(const char *boot_path,
 
 CVOID__PROTO(engine_finish) {
   CVOID__CALL(finish_profile);
+#if defined(WIN32_NATIVE)
+  win32_signals_cleanup();
+  win32_console_cleanup();
+#endif
   fflush(NULL);
 }
 
